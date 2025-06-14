@@ -83,7 +83,7 @@ function exportBookmarksToDesktopFiles() {
     const seenUrls = new Set();
     const uniqueBookmarks = [];
 
-    for (const bm of allBookmarks) {
+    for (const bm of bookmarks) {
         if (!seenUrls.has(bm.url)) {
             seenUrls.add(bm.url);
             uniqueBookmarks.push(bm);
