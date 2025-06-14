@@ -74,9 +74,23 @@ function exportBookmarksToDesktopFiles() {
         // If directory doesn't exist, no need to remove
     }
 
-    // Write updated .desktop files
-    const bookmarks = getVivaldiBookmarks();
-    bookmarks.forEach((bm, i) => {
+    // Merge and write updated .desktop files
+    const vivaldiBookmarks = getVivaldiBookmarks();
+    const chromiumBookmarks = getChromiumBookmarks();
+    const bookmarks = vivaldiBookmarks.concat(chromiumBookmarks);
+    
+    // Deduplicate by URL
+    const seenUrls = new Set();
+    const uniqueBookmarks = [];
+
+    for (const bm of allBookmarks) {
+        if (!seenUrls.has(bm.url)) {
+            seenUrls.add(bm.url);
+            uniqueBookmarks.push(bm);
+        }
+    }
+
+    uniqueBookmarks.forEach((bm, i) => {
         const name = bm.title.replace(/\//g, '-');
         const desktopFilePath = `${DESKTOP_DIR}vivaldi-bookmark-${i}.desktop`;
         const desktopFileContent = `[Desktop Entry]
@@ -88,6 +102,7 @@ Categories=Network;WebBrowser;
 `;
         GLib.file_set_contents(desktopFilePath, desktopFileContent);
     });
+
 }
 
 function forceGnomeShellDesktopRefresh() {
