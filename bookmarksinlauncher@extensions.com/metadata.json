@@ -1,0 +1,8 @@
+{
+  "name": "Bookmarks In Launcher",
+  "description": "Adds bookmark shortcuts from web browsers into the default Gnome launcher.",
+  "uuid": "bookmarksinlauncher@extensions.com",
+  "shell-version": [
+    "48"
+  ]
+}
