@@ -5,6 +5,8 @@ import GLib from 'gi://GLib';
 const VIVALDI_BOOKMARKS_PATH = `${GLib.get_home_dir()}/.config/vivaldi/Default/Bookmarks`;
 const DESKTOP_DIR = `${GLib.get_home_dir()}/.local/share/applications/vivaldi-bookmarks/`;
 
+const CHROMIUM_BOOKMARKS_PATH = `${GLib.get_home_dir()}/.config/chromium/Default/Bookmarks`;
+
 let bookmarksMonitor = null;
 let debounceTimeoutId = 0;
 
@@ -27,6 +29,29 @@ function getVivaldiBookmarks() {
         }
     } catch (e) {
         logError(`Failed to load Vivaldi bookmarks: ${e.message}`);
+    }
+    return bookmarks;
+}
+
+function getChromiumBookmarks() {
+    const bookmarks = [];
+    try {
+        if (!GLib.file_test(CHROMIUM_BOOKMARKS_PATH, GLib.FileTest.EXISTS))
+            return bookmarks;
+
+        const file = Gio.File.new_for_path(CHROMIUM_BOOKMARKS_PATH);
+        const [, contents] = file.load_contents(null);
+        const text = new TextDecoder().decode(contents);
+        const data = JSON.parse(text);
+        const nodes = data?.roots?.bookmark_bar?.children || [];
+
+        for (const node of nodes) {
+            if (node.type === 'url') {
+                bookmarks.push({ title: node.name, url: node.url });
+            }
+        }
+    } catch (e) {
+        logError(`Failed to load Chromium bookmarks: ${e.message}`);
     }
     return bookmarks;
 }
