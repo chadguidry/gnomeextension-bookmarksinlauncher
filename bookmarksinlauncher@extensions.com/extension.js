@@ -1,157 +1,123 @@
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import Main from 'resource:///org/gnome/shell/ui/main.js';
+import St from 'gi://St';
+import { toString } from 'imports.byteArray';
 
-const VIVALDI_BOOKMARKS_PATH = `${GLib.get_home_dir()}/.config/vivaldi/Default/Bookmarks`;
-const DESKTOP_DIR = `${GLib.get_home_dir()}/.local/share/applications/vivaldi-bookmarks/`;
+const BOOKMARK_PATHS = {
+    vivaldi: `${GLib.get_home_dir()}/.config/vivaldi/Default/Bookmarks`,
+    chrome: `${GLib.get_home_dir()}/.config/google-chrome/Default/Bookmarks`,
+    chromium: `${GLib.get_home_dir()}/.config/chromium/Default/Bookmarks`,
+    brave: `${GLib.get_home_dir()}/.config/BraveSoftware/Brave-Browser/Default/Bookmarks`,
+    opera: `${GLib.get_home_dir()}/.config/opera/Bookmarks`,
+};
 
-let bookmarksMonitor = null;
-let debounceTimeoutId = 0;
-
-function getVivaldiBookmarks() {
-    const bookmarks = [];
-    try {
-        if (!GLib.file_test(VIVALDI_BOOKMARKS_PATH, GLib.FileTest.EXISTS))
-            return bookmarks;
-
-        const file = Gio.File.new_for_path(VIVALDI_BOOKMARKS_PATH);
-        const [, contents] = file.load_contents(null);
-        const text = new TextDecoder().decode(contents);
-        const data = JSON.parse(text);
-        const nodes = data?.roots?.bookmark_bar?.children || [];
-
-        for (const node of nodes) {
-            if (node.type === 'url') {
-                bookmarks.push({ title: node.name, url: node.url });
-            }
+function findFirstExistingBookmarkFile() {
+    for (const [browser, path] of Object.entries(BOOKMARK_PATHS)) {
+        if (GLib.file_test(path, GLib.FileTest.EXISTS)) {
+            log(`Using bookmarks from ${browser} at ${path}`);
+            return path;
         }
-    } catch (e) {
-        logError(`Failed to load Vivaldi bookmarks: ${e.message}`);
     }
-    return bookmarks;
+    return null;
 }
 
-function exportBookmarksToDesktopFiles() {
-    // Ensure target directory exists
-    GLib.mkdir_with_parents(DESKTOP_DIR, 0o755);
-
-    // Delete old .desktop files
-    const dir = Gio.File.new_for_path(DESKTOP_DIR);
+function parseBookmarks(path) {
     try {
-        const enumerator = dir.enumerate_children('standard::*', Gio.FileQueryInfoFlags.NONE, null);
-        let info;
-        while ((info = enumerator.next_file(null)) !== null) {
-            if (info.get_name().endsWith('.desktop')) {
-                dir.get_child(info.get_name()).delete(null);
+        const file = Gio.File.new_for_path(path);
+        const [, contents] = file.load_contents(null);
+        const json = JSON.parse(toString(contents));
+        const bookmarks = [];
+
+        function walk(node) {
+            if (node.type === 'url') {
+                bookmarks.push({
+                    name: node.name,
+                    url: node.url
+                });
+            } else if (node.children) {
+                node.children.forEach(walk);
             }
         }
-    } catch (e) {
-        // If directory doesn't exist, no need to remove
-    }
 
-    // Write updated .desktop files
-    const bookmarks = getVivaldiBookmarks();
-    bookmarks.forEach((bm, i) => {
-        const name = bm.title.replace(/\//g, '-');
-        const desktopFilePath = `${DESKTOP_DIR}vivaldi-bookmark-${i}.desktop`;
-        const desktopFileContent = `[Desktop Entry]
+        const roots = json.roots;
+        for (const key of ['bookmark_bar', 'other', 'synced']) {
+            if (roots[key]?.children) {
+                roots[key].children.forEach(walk);
+            }
+        }
+
+        return bookmarks;
+    } catch (e) {
+        logError(e, 'Failed to parse bookmarks');
+        return [];
+    }
+}
+
+function createDesktopFile(bookmark, desktopDir) {
+    const desktopEntry = `[Desktop Entry]
 Type=Application
-Name=${name}
-Exec=vivaldi "${bm.url}"
-Icon=web-browser
+Name=${bookmark.name}
+Exec=xdg-open "${bookmark.url}"
+Icon=internet-web-browser
+Terminal=false
 Categories=Network;WebBrowser;
 `;
-        GLib.file_set_contents(desktopFilePath, desktopFileContent);
-    });
-}
 
-function forceGnomeShellDesktopRefresh() {
-    const desktopDir = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'share', 'applications']);
-    const dummyPath = GLib.build_filenamev([desktopDir, 'vivaldi-refresh.desktop']);
+    const safeFileName = bookmark.name.replace(/[^a-z0-9]+/gi, '_').substring(0, 50);
+    const filePath = `${desktopDir}/${safeFileName}.desktop`;
 
     try {
-        const contents = `[Desktop Entry]
-Type=Application
-Name=Refresh Trigger
-Exec=true
-NoDisplay=true`;
-
-        GLib.file_set_contents(dummyPath, contents);
-
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
-            try {
-                const file = Gio.File.new_for_path(dummyPath);
-                file.delete(null);
-            } catch (e) {
-                logError(e);
-            }
-            return GLib.SOURCE_REMOVE;
-        });
+        const file = Gio.File.new_for_path(filePath);
+        file.replace_contents(desktopEntry, null, false, Gio.FileCreateFlags.NONE, null);
     } catch (e) {
-        logError(e);
+        logError(e, `Failed to write desktop entry for ${bookmark.name}`);
     }
 }
 
-function debounceUpdate() {
-    if (debounceTimeoutId !== 0) {
-        GLib.source_remove(debounceTimeoutId);
-    }
-
-    debounceTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
-        exportBookmarksToDesktopFiles();
-        forceGnomeShellDesktopRefresh();
-        debounceTimeoutId = 0;
-        return GLib.SOURCE_REMOVE;
-    });
-}
-
-export default class VivaldiBookmarksExtension extends Extension {
+export default class BookmarkLauncherExtension extends Extension {
     enable() {
-        exportBookmarksToDesktopFiles();
-        forceGnomeShellDesktopRefresh();
+        const desktopDir = `${GLib.get_home_dir()}/.local/share/applications/bookmark-launcher/`;
+        const dir = Gio.File.new_for_path(desktopDir);
 
-        try {
-            const bookmarksFile = Gio.File.new_for_path(VIVALDI_BOOKMARKS_PATH);
-            bookmarksMonitor = bookmarksFile.monitor_file(Gio.FileMonitorFlags.NONE, null);
-            bookmarksMonitor.connect('changed', (_monitor, _file, _otherFile, eventType) => {
-                if (eventType === Gio.FileMonitorEvent.CHANGES_DONE_HINT) {
-                    log('Vivaldi bookmarks changed — scheduling update');
-                    debounceUpdate();
-                }
-            });
-        } catch (e) {
-            logError(`Failed to monitor Vivaldi bookmarks file: ${e.message}`);
+        if (!dir.query_exists(null)) {
+            dir.make_directory_with_parents(null);
         }
+
+        const bookmarkPath = findFirstExistingBookmarkFile();
+        if (!bookmarkPath) {
+            log('No supported bookmark file found');
+            return;
+        }
+
+        const bookmarks = parseBookmarks(bookmarkPath);
+        bookmarks.forEach(b => createDesktopFile(b, desktopDir));
+
+        this._indicator = new St.Label({ text: `Bookmarks: ${bookmarks.length}` });
+        Main.panel._rightBox.insert_child_at_index(this._indicator, 0);
     }
 
     disable() {
-        if (bookmarksMonitor) {
-            bookmarksMonitor.cancel();
-            bookmarksMonitor = null;
+        if (this._indicator) {
+            this._indicator.destroy();
+            this._indicator = null;
         }
 
-        if (debounceTimeoutId !== 0) {
-            GLib.source_remove(debounceTimeoutId);
-            debounceTimeoutId = 0;
-        }
+        const desktopDir = `${GLib.get_home_dir()}/.local/share/applications/bookmark-launcher/`;
+        const dir = Gio.File.new_for_path(desktopDir);
 
-        const dir = Gio.File.new_for_path(DESKTOP_DIR);
         try {
-            const enumerator = dir.enumerate_children('standard::*', Gio.FileQueryInfoFlags.NONE, null);
-            let info;
-            while ((info = enumerator.next_file(null)) !== null) {
-                if (info.get_name().endsWith('.desktop')) {
-                    dir.get_child(info.get_name()).delete(null);
-                }
+            if (dir.query_exists(null)) {
+                dir.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null)
+                    .forEach(info => {
+                        const child = dir.get_child(info.get_name());
+                        child.delete(null);
+                    });
+                dir.delete(null);
             }
-            forceGnomeShellDesktopRefresh();
         } catch (e) {
-            // Ignore errors during cleanup
+            logError(e, 'Failed to clean up .desktop files');
         }
     }
-}
-
-// Helper for logging errors in GJS
-function logError(msg) {
-    globalThis.logError ? globalThis.logError(msg) : console.error(msg);
 }
